@@ -125,3 +125,44 @@ async def get_metrics_snapshots(db: AsyncSession, limit: int = 100):
     result = await db.execute(stmt)
     rows = result.scalars().all()
     return rows
+
+
+async def get_litellm_models(db: AsyncSession, limit: int = 100):
+    from sqlalchemy import select
+
+    stmt = select(models.LitellmModel).order_by(models.LitellmModel.last_seen.desc()).limit(limit)
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    out = []
+    for r in rows:
+        out.append({
+            "model_id": r.model_id,
+            "source": r.source,
+            "meta": r.meta,
+            "last_seen": r.last_seen.isoformat() if r.last_seen is not None else None,
+        })
+    return out
+
+
+async def upsert_litellm_models(db: AsyncSession, models_list: list[dict]):
+    """Replace stored litellm models with the provided list.
+
+    This implementation performs a simple refresh: delete existing rows and
+    insert the provided models. It's safe for low-volume metadata and keeps
+    the logic straightforward (no complex upsert semantics required).
+    """
+    from sqlalchemy import delete as sa_delete
+    # clear existing
+    await db.execute(sa_delete(models.LitellmModel))
+    # insert new
+    for m in models_list:
+        try:
+            obj = models.LitellmModel(
+                model_id=str(m.get("model_id") or m.get("id") or m.get("name")),
+                source=m.get("source"),
+                meta=m.get("meta") or m,
+            )
+            db.add(obj)
+        except Exception:
+            continue
+    await db.commit()

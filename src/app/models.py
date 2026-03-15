@@ -42,3 +42,12 @@ class Event(Base):
     event_type = Column(String, nullable=False, index=True)
     payload = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LitellmModel(Base):
+    __tablename__ = "litellm_models"
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(String, unique=True, nullable=False, index=True)
+    source = Column(String, nullable=True)
+    meta = Column(JSON, nullable=True)
+    last_seen = Column(DateTime(timezone=True), server_default=func.now())
