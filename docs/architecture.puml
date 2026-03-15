@@ -1,0 +1,32 @@
+@startuml
+!define AWSPUML https://raw.githubusercontent.com/awslabs/aws-icons-for-plantuml/v14.0/LATEST/AWSCommon.puml
+skinparam componentStyle rectangle
+
+package "Agentic AI" {
+  [FastAPI App] as app
+  [AgentExecutor] as executor
+  [QueueAdapter (Redis / in-memory)] as queue
+  [Adapters: Ollama, LiteLLM, OpenAI] as adapters
+  [Tools Registry] as tools
+  [Admin import / UI] as ui
+}
+
+database "Postgres + pgvector" as pg
+queue "Redis" as redis
+
+app -down-> pg : persist memories
+executor --> adapters : call LLMs
+executor --> tools : call tools
+app --> queue : enqueue task
+queue --> executor : deliver task
+executor --> pg : persist outputs
+app <-> ui : serve playground / admin
+app --> redis : cache embeddings / queue (optional)
+
+note right of adapters
+  Adapters normalize responses
+  Ollama / LiteLLM run locally
+  OpenAI used as fallback
+end note
+
+@enduml

@@ -1,0 +1,11 @@
+# litellm configuration for local models
+# Adjust values to match your installed litellm model and runtime
+model: llama2
+device: cpu
+temperature: 0.2
+max_tokens: 1024
+context_size: 8192
+use_mmap: true
+# Example additional settings
+threads: 4
+seed: 42

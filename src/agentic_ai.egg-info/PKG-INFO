@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: agentic-ai
+Version: 0.1.0
+Summary: Local-first agentic AI platform (Ollama, LiteLLM, OpenAI adapters)
+Author-email: Agentic Dev <dev@example.com>
+Requires-Dist: fastapi
+Requires-Dist: uvicorn[standard]
+Requires-Dist: asyncpg
+Requires-Dist: SQLAlchemy
+Requires-Dist: alembic
+Requires-Dist: pgvector>=0.4.2
+Requires-Dist: pydantic>=2.0
+Requires-Dist: python-dotenv
+Requires-Dist: aiohttp
+Requires-Dist: litellm

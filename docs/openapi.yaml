@@ -1,0 +1,165 @@
+openapi: 3.0.3
+info:
+  title: Agentic AI API
+  version: 1.0.0
+  description: "Local-first agentic AI runtime API (FastAPI). See README.md for run instructions."
+servers:
+  - url: http://localhost:8000
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /agents:
+    get:
+      summary: List agents
+      responses:
+        '200':
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Agent'
+  /agents/{agent_id}/run:
+    post:
+      summary: Enqueue an agent run
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRunRequest'
+      responses:
+        '200':
+          description: Enqueued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnqueueResponse'
+  /agents/{agent_id}/status:
+    get:
+      summary: Get agent status / recent memories
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id:
+                    type: integer
+                  queue_size:
+                    type: integer
+                  recent_memories:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Memory'
+  /agents/{agent_id}/memories/ingest:
+    post:
+      summary: Ingest a text into agent memories (compute embedding)
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+              required:
+                - content
+      responses:
+        '201':
+          description: Memory created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Memory'
+  /admin/import:
+    post:
+      summary: Import agent markdowns from repo (recursive)
+      responses:
+        '200':
+          description: Import summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported:
+                    type: integer
+components:
+  schemas:
+    Agent:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+    AgentRunRequest:
+      type: object
+      properties:
+        goal:
+          type: string
+        inputs:
+          type: object
+      required:
+        - goal
+    EnqueueResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        agent_id:
+          type: integer
+        goal:
+          type: string
+    Memory:
+      type: object
+      properties:
+        id:
+          type: integer
+        agent_id:
+          type: integer
+        content:
+          type: string
+        embedding:
+          type: array
+          items:
+            type: number
+          description: 1536-dimensional vector
+

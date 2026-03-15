@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: ankane/pgvector:latest
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentpass}
+      POSTGRES_DB: ${POSTGRES_DB:-agentdb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "60", "1"]
+
+  litellm:
+    build:
+      context: ./docker/litellm
+    restart: unless-stopped
+    ports:
+      - "11435:11435"
+    # avoid mounting over /app (it contains the wrapper code); mount config into a subfolder instead
+    volumes:
+      - ./litellm_config:/app/config
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OLLAMA_URL=http://host.docker.internal:11434
+
+volumes:
+  pgdata:
