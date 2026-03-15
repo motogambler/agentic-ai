@@ -1,0 +1,11 @@
+# CODEOWNERS
+# Format: <pattern> <owner> [<owner> ...]
+
+# Default owner for the entire repository
+* @motogambler
+
+# Owners for source code
+/src/ @motogambler
+
+# Docs owner
+/docs/ @motogambler
