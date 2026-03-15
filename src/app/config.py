@@ -1,6 +1,24 @@
-from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
 import os
+
+# Prefer the dedicated pydantic-settings package (pydantic v2+ migration).
+# Fall back gracefully so the app can run even if pydantic-settings is not installed
+# or when pydantic has moved BaseSettings to that package.
+try:
+    from pydantic_settings import BaseSettings
+    from pydantic import ConfigDict
+except Exception:
+    # pydantic-settings unavailable: try to import ConfigDict and BaseSettings
+    from pydantic import ConfigDict
+    try:
+        # pydantic may still expose BaseSettings on older versions
+        from pydantic import BaseSettings
+    except Exception:
+        # On newer pydantic versions BaseSettings moved; use BaseModel as a
+        # lightweight fallback so the app can start. This means some
+        # BaseSettings-specific features (env_file parsing) won't be applied
+        # automatically, but the Settings __init__ already reads env vars
+        # for critical defaults.
+        from pydantic import BaseModel as BaseSettings
 
 
 class Settings(BaseSettings):

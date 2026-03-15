@@ -34,13 +34,13 @@ Tip: edit project files with `vi` (or `nvim`) e.g. `vi src/app/routers/agents.py
 ```bash
 docker compose up -d
 # then run server in venv
-uvicorn src.app.main:app --reload
+python -m uvicorn src.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 2) Option B — run services manually and start server
 ```powershell
 # ensure Postgres + Redis running and env vars configured
-uvicorn src.app.main:app --reload
+python -m uvicorn src.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 API docs & OpenAPI
