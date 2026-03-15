@@ -16,7 +16,7 @@ import os
 
 logger = logging.getLogger("agent.executor")
 
-VALID_TOOLS = {"echo", "http_get", "calc", "run_cmd", "read_file"}
+VALID_TOOLS = {"echo", "http_get", "calc", "run_cmd", "read_file", "repo_list", "repo_read", "repo_write", "repo_mkdir"}
 
 
 def _model_timeout_seconds(model: str | None, default: int = 20) -> int:
@@ -150,9 +150,35 @@ class AgentExecutor:
         except Exception:
             persona_prefix = ""
 
+        repo_context = ""
+        try:
+            if task.context and isinstance(task.context, dict):
+                repo_base = task.context.get("repo_base")
+                repo_snapshot = task.context.get("repo_snapshot")
+                if repo_base:
+                    repo_context += f"Repository base available: {repo_base}\n"
+                if isinstance(repo_snapshot, dict):
+                    snap_path = repo_snapshot.get("path")
+                    snap_content = str(repo_snapshot.get("content") or "")[:4000]
+                    repo_context += (
+                        "Repository snapshot is already provided below. Use it directly before asking for more input.\n"
+                        f"Snapshot path: {snap_path}\n"
+                        f"Snapshot content:\n{snap_content}\n"
+                    )
+                if repo_context:
+                    repo_context += (
+                        "If you need more repository context, use repo_list(path), repo_read(path), "
+                        "repo_write(path, content), or repo_mkdir(path). Do not ask the user to paste files "
+                        "if repo context or repo tools are available.\n"
+                    )
+        except Exception:
+            repo_context = ""
+
         prompt = (
             f"{persona_prefix}Agent {task.agent_id} goal: {task.goal}\n"
-            "Available tools: echo(text), http_get(url), calc(expr), run_cmd(cmd), read_file(path).\n"
+            f"{repo_context}"
+            "Available tools: echo(text), http_get(url), calc(expr), run_cmd(cmd), read_file(path), "
+            "repo_list(path), repo_read(path), repo_write(path, content), repo_mkdir(path).\n"
             "If a tool is needed, respond with ONLY valid JSON in this exact shape: "
             "{\"tool_call\": {\"tool\": \"calc\", \"args\": {\"expr\": \"1+1\"}}}.\n"
             "If no tool is needed, respond with a concise plain-text answer only."

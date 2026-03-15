@@ -6,6 +6,22 @@ import os
 import httpx
 
 
+def _build_request_headers() -> dict | None:
+    """Build optional headers for outgoing LLM wrapper requests from env vars.
+
+    - CLAUDE_CODE_ATTRIBUTION_HEADER: sets X-Code-Attribution header (URL/contact)
+    - OLLAMA_NONESSENTIAL_TRAFFIC: if truthy, sets X-Nonessential-Traffic: true
+    """
+    headers = {}
+    attr = os.getenv("CLAUDE_CODE_ATTRIBUTION_HEADER") or os.getenv("CODE_ATTRIBUTION_HEADER")
+    if attr:
+        headers["X-Code-Attribution"] = attr
+    nonessential = os.getenv("OLLAMA_NONESSENTIAL_TRAFFIC", "false").lower()
+    if nonessential in ("1", "true", "yes"):
+        headers["X-Nonessential-Traffic"] = "true"
+    return headers if headers else None
+
+
 def _wrapper_timeout_seconds(model: str | None = None) -> float:
     default_timeout = 120.0 if (isinstance(model, str) and model.startswith("ollama:")) else 60.0
     try:
@@ -56,7 +72,8 @@ class LiteLLMAdapter(LLMAdapter):
                     continue
                 seen.add(base)
                 try:
-                    async with httpx.AsyncClient(timeout=_wrapper_timeout_seconds(model)) as client:
+                    headers = _build_request_headers()
+                    async with httpx.AsyncClient(timeout=_wrapper_timeout_seconds(model), headers=headers) as client:
                         resp = await client.post(base + "/api/generate", json={"prompt": prompt, "model": model})
                         if resp.status_code == 200:
                             data = resp.json()

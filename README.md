@@ -172,3 +172,90 @@ pg_dump -Fc --file=backups/agentdb-$(date +%F).dump $DATABASE_URL
 
 Integration persistence check
 - There is a small helper script at `tests/integration/check_persistence.py` that creates an agent and memory, and helps verify persistence after a manual restart. Use it for manual verification or wrap it in CI with appropriate service restart steps.
+
+Repo tool & Playground repository field
+-------------------------------------
+
+This project includes an optional guarded "repo" tool that lets agents read and write files under a configured, allow-listed set of project folders (for example `agents/`, `scripts/`, `docs/`, `workspace/`). The tool is disabled by default and must be explicitly enabled in your environment for write operations.
+
+To enable the repo tool and tune allowed folders, add these to your `.env` or environment:
+
+```powershell
+# enable repo write operations
+SET ENABLE_REPO_TOOL=true
+# comma-separated allowed folders relative to the project root
+SET REPO_TOOL_ALLOWED_DIRS=agents,scripts,docs,workspace
+# maximum bytes allowed for read/write (defaults to 200000)
+SET REPO_TOOL_MAX_BYTES=200000
+```
+
+When enabled, agents can call these tools via structured tool-calls (the executor enforces an allow-list and size limits). Writes optionally persist the file contents into the agent's memories for replay/auditing when the task includes an `agent_id` and `persist_memory` flag.
+
+Playground integration
+----------------------
+
+The playground UI at `/ui/playground` now exposes a "Repository / Folder" field. When you set this field and submit a task, the selected path is included in the task payload as `context.repo_base`. Agents and tools can use `context.repo_base` as the base path for repo operations so you can control which folder they read from or write to from the UI.
+
+Example tool-call (submitted by an agent in a task) to write a file relative to the selected repo base:
+
+```json
+{"tool_call": {"tool": "repo_write", "args": {"path": "agents/new-agent.md", "content": "# New Agent\n...", "agent_id": 1, "persist_memory": true}}}
+```
+
+Audit events for repo operations are recorded in the `events` table and are visible via the `/events` API.
+
+Writing to the repository (safe workflow)
+----------------------------------------
+
+The repo tool supports writing files but is intentionally guarded. Follow this workflow to enable and use writes safely:
+
+- Enable the repo tool and set allowed directories in your environment or `.env` (example):
+
+```powershell
+SET ENABLE_REPO_TOOL=true
+SET REPO_TOOL_ALLOWED_DIRS=agents,scripts,docs,workspace
+SET REPO_TOOL_MAX_BYTES=200000
+```
+
+- Preferred usage: let an agent perform the write via a structured tool-call so writes are auditable and optionally persisted as a memory. Agents must call the `repo_write` tool with a relative path under an allowed directory.
+
+Example tool-call (agent runtime will execute this when the LLM emits a tool call):
+
+```json
+{
+	"tool_call": {
+		"tool": "repo_write",
+		"args": {
+			"path": "agents/new-agent.md",
+			"content": "---\nname: new-agent\n---\n# New agent\nDescription...",
+			"agent_id": 1,
+			"persist_memory": true
+		}
+	}
+}
+```
+
+- From the Playground UI: set the `Repository / Folder` field to a valid allowed folder (for example `agents/`) and enable the `Repo tool` toggle. When you submit a task, the selected base path is available to the agent as `context.repo_base` and the agent may write relative files under that base if it's allowed.
+
+- Audit & verification: repo write events are recorded in `events` (see `/events`). You can also inspect the repo with `/admin/repo/list` and, when enabled, `/admin/repo/snapshot` which returns metadata (size/mtime) for files; reading raw file contents from the API is disabled by default for safety.
+
+Troubleshooting UI slow updates
+-------------------------------
+
+The playground UI queries the backend for agent status and recent memories. To make status updates more responsive the UI now polls the selected agent's status every 2.5s while an agent is selected (this is enabled by default). If you see stale data:
+
+- Click **Refresh Status** to force an immediate update.
+- Ensure the FastAPI server is running and `REDIS_URL` is configured if you rely on Redis-backed queue durability.
+- Use `/admin/queue` to inspect queue items and `/agents/{agent_id}/status` to read the latest agent status programmatically.
+
+Example quick checks (server must be running):
+
+```powershell
+# queue inspection
+curl.exe "http://127.0.0.1:8000/admin/queue" -s | jq .
+
+# agent status
+curl.exe "http://127.0.0.1:8000/agents/1/status" -s | jq .
+```
+
+If you'd prefer push updates rather than polling (SSE or WebSockets), I can add an SSE endpoint that emits status/queue events from the server. This is a larger change but improves real-time responsiveness.

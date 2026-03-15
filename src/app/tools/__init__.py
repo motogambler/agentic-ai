@@ -1,4 +1,5 @@
 from .basic import echo, http_get, calc, run_cmd, read_file
+from .repo import repo_list, repo_read, repo_write, repo_mkdir
 
 _TOOLS = {
     "echo": echo,
@@ -6,6 +7,11 @@ _TOOLS = {
     "calc": calc,
     "run_cmd": run_cmd,
     "read_file": read_file,
+    # repo tools
+    "repo_list": repo_list,
+    "repo_read": repo_read,
+    "repo_write": repo_write,
+    "repo_mkdir": repo_mkdir,
 }
 
 

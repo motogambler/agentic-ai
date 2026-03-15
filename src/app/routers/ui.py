@@ -1,12 +1,25 @@
+import json
+
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
+
+from .. import crud
+from ..db import AsyncSessionLocal
 
 router = APIRouter()
 
 
 @router.get("/playground", response_class=HTMLResponse)
 async def agent_playground():
-    html = """
+    initial_agents = []
+    try:
+        async with AsyncSessionLocal() as db:
+            agents = await crud.get_agents(db)
+            initial_agents = [{"id": agent.id, "name": agent.name} for agent in agents]
+    except Exception:
+        initial_agents = []
+
+    html = r"""
 <!doctype html>
 <html>
   <head>
@@ -19,6 +32,12 @@ async def agent_playground():
       textarea { height: 140px; }
       #output { white-space: pre-wrap; background:#f7f7f7; padding:10px; margin-top:10px; }
       button { margin-top:8px; padding:8px 12px; }
+      .repo-controls { display:flex; gap:12px; align-items:center; margin-top:10px; }
+      .repo-controls .repo-path-wrap { flex:1; min-width:0; }
+      .repo-controls .repo-path-wrap input { width:100%; box-sizing:border-box; }
+      .repo-controls .repo-toggle { display:flex; align-items:center; gap:8px; margin:0; white-space:nowrap; }
+      .repo-controls .repo-toggle input { width:auto; margin:0; }
+      .repo-note { font-size:12px; color:#666; margin-top:6px; }
     </style>
   </head>
   <body>
@@ -36,6 +55,18 @@ async def agent_playground():
     <label>Context (optional)
       <textarea id="context"></textarea>
     </label>
+    <div class="repo-controls">
+      <div class="repo-path-wrap">
+        <label style="margin-top:0">Repository / Folder (optional)
+          <input id="repoPath" placeholder="agents/ or workspace/ or leave blank" />
+        </label>
+      </div>
+      <label class="repo-toggle">
+        <input type="checkbox" id="repoToggle" />
+        <span>Enable repo tool</span>
+      </label>
+    </div>
+    <div class="repo-note" id="repoStatus">Repo tool: checking status...</div>
     <button id="submit">Submit</button>
     <div style="margin-top:8px">Status: <span id="status">-</span></div>
     <div style="display:flex;gap:20px;margin-top:12px;">
@@ -55,6 +86,8 @@ async def agent_playground():
     </div>
 
     <script>
+      const INITIAL_AGENTS = __INITIAL_AGENTS__;
+      const MODEL_STORAGE_KEY = 'agentic-ai-model-options';
       let lastSubmittedMs = 0;
 
       function setOutput(message){
@@ -129,80 +162,126 @@ async def agent_playground():
         const sel = document.getElementById('agentSelect');
         if(btn) btn.disabled = true;
         if(sel) sel.innerHTML = '<option value="">Loading agents...</option>';
+
+        function renderAgents(agents){
+          if(!sel) return;
+          sel.innerHTML = '';
+          if(!Array.isArray(agents) || agents.length === 0){
+            sel.innerHTML = '<option value="">(no agents found)</option>';
+            return;
+          }
+          agents.forEach(a => {
+            const opt = document.createElement('option');
+            const aid = a.id || a.file || (a.frontmatter && a.frontmatter.name) || a.name;
+            const label = a.name || (a.frontmatter && a.frontmatter.name) || a.summary || a.file || aid;
+            opt.value = aid;
+            opt.textContent = label;
+            sel.appendChild(opt);
+          });
+        }
+
+        if(Array.isArray(INITIAL_AGENTS) && INITIAL_AGENTS.length){
+          renderAgents(INITIAL_AGENTS);
+          if(btn) btn.disabled = false;
+        }
+
         try{
           const res = await fetch('/agents/');
           if(!res.ok){
             const txt = await res.text();
             setOutput('Failed to load agents: ' + res.status + ' ' + txt);
-            if(sel) sel.innerHTML = '<option value="">(failed to load agents)</option>';
+            if(!INITIAL_AGENTS.length && sel) sel.innerHTML = '<option value="">(failed to load agents)</option>';
             return;
           }
           const agents = await res.json();
-          if(sel) sel.innerHTML = '';
-          if(!Array.isArray(agents) || agents.length === 0){
-            if(sel) sel.innerHTML = '<option value="">(no agents found)</option>';
-          } else {
-            agents.forEach(a => {
-              const opt = document.createElement('option');
-              const aid = a.id || a.file || (a.frontmatter && a.frontmatter.name) || a.name;
-              const label = a.name || (a.frontmatter && a.frontmatter.name) || a.summary || a.file || aid;
-              opt.value = aid;
-              opt.textContent = label;
-              sel.appendChild(opt);
-            });
-          }
+          renderAgents(agents);
           if(btn) btn.disabled = false;
           await refreshStatus();
         }catch(e){
           setOutput('Error loading agents: ' + e);
-          if(sel) sel.innerHTML = '<option value="">(error loading agents)</option>';
+          if(!INITIAL_AGENTS.length && sel) sel.innerHTML = '<option value="">(error loading agents)</option>';
         }
       }
 
       async function fetchModels(){
         const msel = document.getElementById('modelSelect');
-        if(msel) msel.innerHTML = '<option value="">Loading models...</option>';
-        try{
-          const [litellmRes, ollamaRes] = await Promise.all([
-            fetch('/admin/litellm/models'),
-            fetch('/admin/ollama_models')
-          ]);
+        const prevSelection = msel ? msel.value : '';
 
-          let models = [];
-
-          if(litellmRes.ok){
-            const litellmData = await litellmRes.json();
-            models.push(...normalizeModelIds(litellmData));
-          }
-
-          if(ollamaRes.ok){
-            const ollamaData = await ollamaRes.json();
-            const ollamaModels = normalizeModelIds(ollamaData.models).map(id => id.startsWith('ollama:') ? id : ('ollama:' + id));
-            models.push(...ollamaModels);
-          }
-
-          models = Array.from(new Set(models.filter(Boolean)));
-
-          if(msel) msel.innerHTML = '<option value="">(default)</option>';
-          if(msel && models.length){
+        function renderModels(models){
+          if(!msel) return;
+          msel.innerHTML = '<option value="">(default)</option>';
+          if(Array.isArray(models) && models.length){
             models.forEach(model => {
               const opt = document.createElement('option');
               opt.value = model;
               opt.textContent = model;
               msel.appendChild(opt);
             });
-          } else if(msel) {
+          } else {
             msel.innerHTML = '<option value="">(default)</option><option value="" disabled>(no models found)</option>';
+          }
+        }
+
+        try{
+          const cached = window.localStorage.getItem(MODEL_STORAGE_KEY);
+          if(cached){
+            const parsed = JSON.parse(cached);
+            if(Array.isArray(parsed) && parsed.length){
+              renderModels(parsed);
+              if(prevSelection && parsed.includes(prevSelection)){
+                msel.value = prevSelection;
+              }
+            }
+          }
+        }catch(_){ }
+
+        function fetchWithTimeout(url, ms){
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), ms);
+          return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+        }
+
+        try{
+          const [litellmRes, ollamaRes] = await Promise.all([
+            fetchWithTimeout('/admin/litellm/models', 3000).catch(() => null),
+            fetchWithTimeout('/admin/ollama_models', 2000).catch(() => null)
+          ]);
+
+          let models = [];
+
+          if(litellmRes && litellmRes.ok){
+            const litellmData = await litellmRes.json();
+            models.push(...normalizeModelIds(litellmData));
+          }
+
+          if(ollamaRes && ollamaRes.ok){
+            const ollamaData = await ollamaRes.json();
+            const ollamaModels = normalizeModelIds(ollamaData.models).map(id => id.startsWith('ollama:') ? id : ('ollama:' + id));
+            models.push(...ollamaModels);
+          }
+
+          models = Array.from(new Set(models.filter(Boolean)));
+          renderModels(models);
+          try { window.localStorage.setItem(MODEL_STORAGE_KEY, JSON.stringify(models)); } catch (_) { }
+          if(prevSelection && models.includes(prevSelection)){
+            msel.value = prevSelection;
           }
         }catch(e){
           console.error('model fetch error', e);
-          if(msel) msel.innerHTML = '<option value="">(default)</option><option value="" disabled>(error loading models)</option>';
+          try{
+            const cached = window.localStorage.getItem(MODEL_STORAGE_KEY);
+            if(!cached && msel) msel.innerHTML = '<option value="">(default)</option><option value="" disabled>(error loading models)</option>';
+          }catch(_){
+            if(msel) msel.innerHTML = '<option value="">(default)</option><option value="" disabled>(error loading models)</option>';
+          }
         }
       }
+
       async function submit(){
         const id = document.getElementById('agentSelect').value;
         const goal = document.getElementById('goal').value;
         const context = document.getElementById('context').value;
+        const repoPath = document.getElementById('repoPath').value.trim();
         const modelEl = document.getElementById('modelSelect');
         const model = modelEl ? modelEl.value : '';
         if(!id || !goal){ alert('Select agent and provide a goal'); return; }
@@ -211,18 +290,56 @@ async def agent_playground():
         lastSubmittedMs = Date.now();
         const body = { goal: goal };
         if(model) body.model = model;
-        if(context) body.context = context;
+
+        let ctx = {};
+        if(context){
+          try { ctx = JSON.parse(context); } catch (_) { ctx.note = context; }
+        }
+
+        if(repoPath){
+          ctx.repo_base = repoPath;
+          try{
+            const listRes = await fetch('/admin/repo/list?path=' + encodeURIComponent(repoPath));
+            if(listRes.ok){
+              const listData = await listRes.json();
+              const files = Array.isArray(listData.result) ? listData.result : [];
+              let candidate = null;
+              for(const item of files){
+                const name = item && item.name ? item.name.toLowerCase() : '';
+                if(!item.is_dir && (name.startsWith('readme') || name.endsWith('.md') || name.endsWith('.txt'))){
+                  candidate = item.name;
+                  break;
+                }
+              }
+              if(!candidate){
+                const firstFile = files.find(item => item && !item.is_dir);
+                if(firstFile) candidate = firstFile.name;
+              }
+              if(candidate){
+                const filePath = repoPath.replace(/\\/g, '/') .replace(/\/$/, '') + '/' + candidate;
+                // Reading file contents from the server is disabled; include only path metadata.
+                ctx.repo_snapshot = { path: filePath };
+              }
+            }
+          }catch(e){
+            console.warn('repo prefetch failed', e);
+          }
+        }
+
+        if(Object.keys(ctx).length) body.context = ctx;
+
         try{
-          const res = await fetch('/agents/'+id+'/run', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)});
+          const res = await fetch('/agents/' + id + '/run', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(body)
+          });
           const txt = await res.text();
           if(!res.ok){
             document.getElementById('output').textContent = `Request failed: ${res.status} ${txt}`;
             if(statusEl) statusEl.textContent = 'Error';
             return;
           }
-          // try parse JSON, otherwise show raw text
-          let data;
-          try{ data = JSON.parse(txt); }catch(_){ data = txt; }
           document.getElementById('output').textContent = 'Queued...';
           if(statusEl) statusEl.textContent = 'Submitted';
           await refreshStatus();
@@ -231,62 +348,121 @@ async def agent_playground():
             await refreshStatus();
           }
         }catch(e){
-          document.getElementById('output').textContent = 'Network/error: '+e;
+          document.getElementById('output').textContent = 'Network/error: ' + e;
           if(statusEl) statusEl.textContent = 'Error';
         }
       }
+
       async function refreshStatus(){
         const id = document.getElementById('agentSelect').value;
         if(!id) return;
         try{
-          const res = await fetch('/agents/'+id+'/status');
+          const res = await fetch('/agents/' + id + '/status');
           const data = await res.json();
           document.getElementById('queueSize').textContent = data.queue_size;
           const recent = document.getElementById('recent');
           recent.innerHTML = '';
-          (data.recent_memories||[]).filter(shouldShowInRecent).forEach(m=>{
+          (data.recent_memories || []).filter(shouldShowInRecent).forEach(m => {
             const d = document.createElement('div');
-            d.style.borderTop='1px solid #ddd';
-            d.style.padding='6px 0';
-            d.textContent = (m.created_at?('['+m.created_at+'] '):'') + (m.content||m.id);
+            d.style.borderTop = '1px solid #ddd';
+            d.style.padding = '6px 0';
+            d.textContent = (m.created_at ? ('[' + m.created_at + '] ') : '') + (m.content || m.id);
             recent.appendChild(d);
           });
           const display = latestDisplayMemory(data.recent_memories || []);
           if(display){
             setOutput(formatMemoryForOutput(display.content));
           }
-        }catch(e){ console.error(e); }
+        }catch(e){
+          console.error(e);
+        }
       }
-      document.getElementById('refreshStatus').addEventListener('click', refreshStatus);
-      document.getElementById('viewQueue').addEventListener('click', fetchQueue);
-      document.getElementById('submit').addEventListener('click', submit);
-      document.getElementById('refreshModels').addEventListener('click', function(e){ e.preventDefault(); fetchModels(); });
-      document.getElementById('agentSelect').addEventListener('change', refreshStatus);
 
-      loadAgents();
-      fetchModels();
-      setInterval(function(){ fetchModels().catch(()=>{}); }, 60000);
+      async function fetchRepoToolState(){
+        const status = document.getElementById('repoStatus');
+        const toggle = document.getElementById('repoToggle');
+        try{
+          const res = await fetch('/admin/repo_tool');
+          if(!res.ok) throw new Error('status ' + res.status);
+          const data = await res.json();
+          if(toggle) toggle.checked = !!data.enabled;
+          if(status) status.textContent = 'Repo tool: ' + (data.enabled ? 'enabled' : 'disabled') + ' | allowed dirs: ' + (data.allowed_dirs || '-');
+        }catch(e){
+          if(status) status.textContent = 'Repo tool: unavailable';
+        }
+      }
+
+      async function setRepoToolState(enabled){
+        const status = document.getElementById('repoStatus');
+        try{
+          const res = await fetch('/admin/repo_tool', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ enabled })
+          });
+          if(!res.ok) throw new Error('status ' + res.status);
+          const data = await res.json();
+          if(status) status.textContent = 'Repo tool: ' + (data.enabled ? 'enabled' : 'disabled');
+        }catch(e){
+          if(status) status.textContent = 'Repo tool: failed to update';
+        }
+      }
 
       async function fetchQueue(){
         const out = document.getElementById('queueView');
         out.textContent = 'Loading...';
         try{
           const res = await fetch('/admin/queue');
-          if(!res.ok){ out.textContent = 'Failed to fetch queue: '+res.status; return; }
+          if(!res.ok){ out.textContent = 'Failed to fetch queue: ' + res.status; return; }
           const data = await res.json();
           out.innerHTML = `<div style="font-size:12px;margin-bottom:6px"><b>Backend:</b> ${data.backend} <b>Queue:</b> ${data.queue_name}</div>`;
-          if(!data.items || data.items.length===0){ out.innerHTML += '<div style="color:#666">(empty)</div>'; return; }
-          data.items.slice(0,50).forEach(it=>{
+          if(!data.items || data.items.length === 0){ out.innerHTML += '<div style="color:#666">(empty)</div>'; return; }
+          data.items.slice(0, 50).forEach(it => {
             const d = document.createElement('div');
-            d.style.borderTop='1px solid #f0f0f0';
-            d.style.padding='6px 0';
-            try{ d.textContent = JSON.stringify(it); }catch(e){ d.textContent = ''+it; }
+            d.style.borderTop = '1px solid #f0f0f0';
+            d.style.padding = '6px 0';
+            try { d.textContent = JSON.stringify(it); } catch (e) { d.textContent = '' + it; }
             out.appendChild(d);
           });
-        }catch(e){ out.textContent = 'Error: '+e; }
+        }catch(e){
+          out.textContent = 'Error: ' + e;
+        }
       }
+
+      document.getElementById('refreshStatus').addEventListener('click', refreshStatus);
+      document.getElementById('viewQueue').addEventListener('click', fetchQueue);
+      document.getElementById('submit').addEventListener('click', async function(e){ await submit(); startPolling(); });
+      document.getElementById('refreshModels').addEventListener('click', function(e){ e.preventDefault(); fetchModels(); });
+      document.getElementById('repoToggle').addEventListener('change', function(e){ setRepoToolState(!!e.target.checked); });
+
+      // Polling: refresh selected agent's status every 2.5s while an agent is selected.
+      let pollIntervalId = null;
+      function clearPolling(){ if(pollIntervalId){ clearInterval(pollIntervalId); pollIntervalId = null; } }
+      function startPolling(){
+        clearPolling();
+        const aid = document.getElementById('agentSelect').value;
+        if(!aid) return;
+        // immediate refresh then periodic
+        refreshStatus();
+        pollIntervalId = setInterval(() => { refreshStatus(); }, 2500);
+      }
+
+      document.getElementById('agentSelect').addEventListener('change', function(){
+        refreshStatus();
+        const aid = document.getElementById('agentSelect').value;
+        if(aid) startPolling(); else clearPolling();
+      });
+
+      // stop polling when leaving the page (cleanup)
+      window.addEventListener('beforeunload', clearPolling);
+
+      loadAgents();
+      fetchModels();
+      fetchRepoToolState();
     </script>
   </body>
 </html>
     """
+
+    html = html.replace("__INITIAL_AGENTS__", json.dumps(initial_agents))
     return HTMLResponse(content=html)

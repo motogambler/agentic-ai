@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List
+from pathlib import Path
 import os
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
@@ -10,6 +11,107 @@ import httpx
 from ..agent import queue as agent_queue
 
 router = APIRouter()
+
+
+@router.get('/repo_tool', summary="Get repo tool state")
+async def get_repo_tool_state():
+    try:
+        from ..tools import repo as repo_tool
+        enabled = getattr(repo_tool, '_ENABLED', False)
+    except Exception:
+        enabled = False
+    return {"enabled": bool(enabled), "allowed_dirs": os.getenv('REPO_TOOL_ALLOWED_DIRS', 'agents,scripts,docs,workspace'), "max_bytes": int(os.getenv('REPO_TOOL_MAX_BYTES', '200000'))}
+
+
+@router.post('/repo_tool', summary="Set repo tool state")
+async def set_repo_tool_state(payload: dict):
+    """Payload: {"enabled": true|false} - sets the in-process flag and environment var."""
+    try:
+        enabled = bool(payload.get('enabled', False))
+    except Exception:
+        enabled = False
+    # persist to env for this process
+    os.environ['ENABLE_REPO_TOOL'] = 'true' if enabled else 'false'
+    # update the module variable if possible
+    try:
+        from ..tools import repo as repo_tool
+        setattr(repo_tool, '_ENABLED', enabled)
+    except Exception:
+        pass
+    return {"enabled": enabled}
+
+
+
+@router.get('/repo/list', summary="List repository path (admin)")
+async def admin_repo_list(path: str = ""):
+    try:
+        from ..tools import repo as repo_tool
+        res = await repo_tool.repo_list(path)
+        return res
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get('/repo/read', summary="Read repository file (admin)")
+async def admin_repo_read(path: str = ""):
+    # For safety the server no longer exposes file contents. Use /repo/list
+    # and the snapshot endpoint (which returns metadata only).
+    return {"error": "repo_read disabled on server"}
+
+
+@router.get('/repo/snapshot')
+async def admin_repo_snapshot(path: str = "", max_files: int = 200, max_total_bytes: int = 2000000):
+    """Return a snapshot of files under `path` (subject to repo tool allow-list and limits).
+
+    The endpoint walks the allowed path and returns up to `max_files` files
+    and up to `max_total_bytes` combined bytes. Each file is read using the
+    existing `repo_read` helper so the same per-file checks apply.
+    """
+    try:
+        from ..tools import repo as repo_tool
+    except Exception:
+        return {"error": "repo tool unavailable"}
+
+    candidate = repo_tool._resolve_and_check(path or "")
+    if candidate is None:
+        return {"error": "path not allowed"}
+
+    files = []
+    if candidate.is_file():
+        files = [candidate]
+    else:
+        for root, _, filenames in os.walk(candidate):
+            for fname in sorted(filenames):
+                files.append(Path(root) / fname)
+
+    # Return metadata (size, mtime) for files only; do not include contents.
+    result_meta = {}
+    errors = []
+    total_files = 0
+    total_bytes = 0
+    for f in files:
+        if total_files >= max_files or total_bytes >= max_total_bytes:
+            break
+        rel = os.path.relpath(f, os.getcwd())
+        if repo_tool._resolve_and_check(rel) is None:
+            continue
+        try:
+            stat = f.stat()
+            size = stat.st_size
+            mtime = stat.st_mtime
+            # account for bytes toward the total limit
+            if total_bytes + size > max_total_bytes:
+                # trim size accounted but don't include contents
+                size = max_total_bytes - total_bytes
+                if size <= 0:
+                    break
+            result_meta[rel.replace(os.sep, "/")] = {"size": size, "mtime": mtime}
+            total_files += 1
+            total_bytes += size
+        except Exception as e:
+            errors.append({"path": rel, "error": str(e)})
+
+    return {"files": result_meta, "count": total_files, "total_bytes": total_bytes, "errors": errors}
 
 
 def _extract_model_ids(payload) -> list[str]:

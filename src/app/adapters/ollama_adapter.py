@@ -2,6 +2,7 @@ from .base import LLMAdapter
 from typing import Dict, Any
 import aiohttp
 import time
+import os
 
 
 class OllamaAdapter(LLMAdapter):
@@ -24,7 +25,16 @@ class OllamaAdapter(LLMAdapter):
             payload["model"] = model.strip()
         payload["stream"] = False
         try:
-            async with aiohttp.ClientSession() as session:
+            # Build optional headers for attribution/privacy signals
+            headers = {}
+            attr = os.getenv("CLAUDE_CODE_ATTRIBUTION_HEADER") or os.getenv("CODE_ATTRIBUTION_HEADER")
+            if attr:
+                headers["X-Code-Attribution"] = attr
+            nonessential = os.getenv("OLLAMA_NONESSENTIAL_TRAFFIC", "false").lower()
+            if nonessential in ("1", "true", "yes"):
+                headers["X-Nonessential-Traffic"] = "true"
+
+            async with aiohttp.ClientSession(headers=headers or None) as session:
                 async with session.post(f"{self.url}/api/generate", json=payload, timeout=30) as resp:
                         try:
                             data = await resp.json()

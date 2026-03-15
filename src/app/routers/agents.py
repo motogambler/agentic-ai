@@ -17,7 +17,7 @@ except Exception:
 
 router = APIRouter()
 
-VALID_TOOLS = {"echo", "http_get", "calc", "run_cmd", "read_file"}
+VALID_TOOLS = {"echo", "http_get", "calc", "run_cmd", "read_file", "repo_list", "repo_read", "repo_write", "repo_mkdir"}
 
 
 @router.get("/", response_model=List[schemas.AgentRead])
