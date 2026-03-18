@@ -78,14 +78,27 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    # cancel metrics persister if running
+    # cancel background tasks (metrics persister, memory pruner) and await them
     try:
-        t = getattr(app.state, "metrics_task", None)
-        if t:
-            t.cancel()
-            await t
+        tasks = []
+        mt = getattr(app.state, "metrics_task", None)
+        if mt:
+            mt.cancel()
+            tasks.append(mt)
+        mp = getattr(app.state, "memory_pruner", None)
+        if mp:
+            mp.cancel()
+            tasks.append(mp)
+        for t in tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                # expected when cancelling long-running tasks; ignore
+                pass
+            except Exception:
+                logging.exception("error awaiting shutdown task")
     except Exception:
-        pass
+        logging.exception("on_shutdown exception")
 
 
 @app.get("/health")

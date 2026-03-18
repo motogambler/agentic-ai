@@ -2,8 +2,18 @@ import os
 import asyncio
 from typing import List
 import json
+import time
+from collections import OrderedDict
 
 _redis = None
+
+# In-process LRU cache to reduce Redis round-trips for hot texts
+# Entries are (timestamp_seconds, vector)
+_local_cache = OrderedDict()
+_local_cache_lock = asyncio.Lock()
+_local_cache_max = int(os.getenv("EMBEDDING_LRU_SIZE", "1024"))
+# TTL for both Redis and local cache (seconds)
+_cache_ttl = int(os.getenv("EMBEDDING_CACHE_TTL", str(60 * 60)))  # default 1 hour
 
 async def _get_redis():
     global _redis
@@ -21,14 +31,37 @@ async def compute_embedding(text: str) -> List[float]:
 
     Raises RuntimeError if no supported embedding provider is available.
     """
-    # Try cache first
+    # 1) Try local in-process LRU cache
+    now_ts = time.time()
+    async with _local_cache_lock:
+        entry = _local_cache.get(text)
+        if entry is not None:
+            ts, vec = entry
+            if now_ts - ts < _cache_ttl:
+                # move to end as recently used
+                _local_cache.move_to_end(text)
+                return vec
+            else:
+                # expired
+                try:
+                    del _local_cache[text]
+                except Exception:
+                    pass
+
+    # 2) Try Redis cache next
     redis = await _get_redis()
+    key = "embed:" + (text if len(text) < 1000 else text[:1000])
     if redis is not None:
-        key = "embed:" + (text if len(text) < 1000 else text[:1000])
         try:
             v = await redis.get(key)
             if v:
-                return json.loads(v)
+                vec = json.loads(v)
+                # populate local cache
+                async with _local_cache_lock:
+                    _local_cache[text] = (now_ts, vec)
+                    while len(_local_cache) > _local_cache_max:
+                        _local_cache.popitem(last=False)
+                return vec
         except Exception:
             pass
 
@@ -49,9 +82,14 @@ async def compute_embedding(text: str) -> List[float]:
             vec = resp["data"][0]["embedding"]
             if redis is not None:
                 try:
-                    await redis.set(key, json.dumps(vec), ex=60 * 60 * 24)
+                    await redis.set(key, json.dumps(vec), ex=_cache_ttl)
                 except Exception:
                     pass
+            # populate local cache
+            async with _local_cache_lock:
+                _local_cache[text] = (time.time(), vec)
+                while len(_local_cache) > _local_cache_max:
+                    _local_cache.popitem(last=False)
             return vec
         except Exception:
             # fall through to litellm
@@ -82,9 +120,14 @@ async def compute_embedding(text: str) -> List[float]:
         vec = list(vec)
         if redis is not None:
             try:
-                await redis.set(key, json.dumps(vec), ex=60 * 60 * 24)
+                await redis.set(key, json.dumps(vec), ex=_cache_ttl)
             except Exception:
                 pass
+        # populate local cache
+        async with _local_cache_lock:
+            _local_cache[text] = (time.time(), vec)
+            while len(_local_cache) > _local_cache_max:
+                _local_cache.popitem(last=False)
         return vec
     except Exception as e:
         raise RuntimeError("no embedding provider available (install openai or litellm and set OPENAI_API_KEY)") from e

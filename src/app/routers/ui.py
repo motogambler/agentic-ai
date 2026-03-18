@@ -249,18 +249,34 @@ async def agent_playground():
 
           let models = [];
 
+          // Prefer fresh probe results, but do not overwrite a non-empty cached list
+          const cachedRaw = window.localStorage.getItem(MODEL_STORAGE_KEY);
+          let cachedModels = null;
+          try{ cachedModels = cachedRaw ? JSON.parse(cachedRaw) : null; }catch(_){ cachedModels = null; }
+
           if(litellmRes && litellmRes.ok){
             const litellmData = await litellmRes.json();
-            models.push(...normalizeModelIds(litellmData));
+            // respect explicit unavailable flag from backend
+            if(litellmData && litellmData.available !== false){
+              models.push(...normalizeModelIds(litellmData));
+            }
           }
 
           if(ollamaRes && ollamaRes.ok){
             const ollamaData = await ollamaRes.json();
-            const ollamaModels = normalizeModelIds(ollamaData.models).map(id => id.startsWith('ollama:') ? id : ('ollama:' + id));
-            models.push(...ollamaModels);
+            if(ollamaData && ollamaData.available !== false){
+              const ollamaModels = normalizeModelIds(ollamaData.models).map(id => id.startsWith('ollama:') ? id : ('ollama:' + id));
+              models.push(...ollamaModels);
+            }
           }
 
           models = Array.from(new Set(models.filter(Boolean)));
+
+          // If probes returned nothing but we have a non-empty cached list, keep cache
+          if(models.length === 0 && Array.isArray(cachedModels) && cachedModels.length){
+            models = cachedModels;
+          }
+
           renderModels(models);
           try { window.localStorage.setItem(MODEL_STORAGE_KEY, JSON.stringify(models)); } catch (_) { }
           if(prevSelection && models.includes(prevSelection)){
@@ -271,6 +287,8 @@ async def agent_playground():
           try{
             const cached = window.localStorage.getItem(MODEL_STORAGE_KEY);
             if(!cached && msel) msel.innerHTML = '<option value="">(default)</option><option value="" disabled>(error loading models)</option>';
+            // if we have a cached list, render it so refresh doesn't clear UI
+            try{ const parsed = cached ? JSON.parse(cached) : null; if(Array.isArray(parsed) && parsed.length){ renderModels(parsed); } }catch(_){ }
           }catch(_){
             if(msel) msel.innerHTML = '<option value="">(default)</option><option value="" disabled>(error loading models)</option>';
           }

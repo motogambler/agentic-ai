@@ -137,6 +137,28 @@ def _extract_model_ids(payload) -> list[str]:
     return []
 
 
+def _sanitize_models(models) -> list[str]:
+    """Ensure returned models is a list of safe strings. Filter out dicts or
+    error objects that may have leaked through wrapper responses.
+    """
+    out = []
+    if not models:
+        return []
+    for m in models:
+        # ignore error-shaped dicts
+        if isinstance(m, dict):
+            if 'error' in m:
+                continue
+            # try to extract a sensible id field
+            mid = m.get('model') or m.get('id') or m.get('name')
+            if isinstance(mid, str) and mid:
+                out.append(mid)
+            continue
+        if isinstance(m, str) and m:
+            out.append(m)
+    return out
+
+
 def _parse_frontmatter(text: str) -> dict:
     """Very small frontmatter parser for YAML-like key: value pairs.
 
@@ -340,10 +362,12 @@ async def list_litellm_models():
         'http://127.0.0.1:11435',
         'http://host.docker.internal:11435',
     ])
+    probe_timeout = float(os.getenv('LITELLM_PROBE_TIMEOUT', '5.0'))
+    probe_paths = ['/models', '/api/models', '/ollama/models', '/health']
     for base in candidates:
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                for p in ['/models', '/api/models', '/ollama/models', '/health']:
+            async with httpx.AsyncClient(timeout=probe_timeout) as client:
+                for p in probe_paths:
                     try:
                         resp = await client.get(base + p)
                         if resp.status_code == 200:
@@ -351,11 +375,13 @@ async def list_litellm_models():
                                 data = resp.json()
                                 if isinstance(data, dict) and 'models' in data:
                                     models = _extract_model_ids(data.get('models'))
+                                    models = _sanitize_models(models)
                                     if models:
                                         return {"available": True, "models": models, "source": data.get("source") or "wrapper", "base": base, "path": p}
                                 # or may return raw list
                                 if isinstance(data, list):
                                     models = _extract_model_ids(data)
+                                    models = _sanitize_models(models)
                                     if models:
                                         return {"available": True, "models": models, "source": "wrapper", "base": base, "path": p}
                             except Exception:
@@ -381,6 +407,7 @@ async def list_litellm_models():
                 models = list(litellm.models.keys())
             else:
                 models = list(litellm.models)
+            models = _sanitize_models(models)
             return {"available": True, "models": models}
         except Exception:
             pass
@@ -389,7 +416,8 @@ async def list_litellm_models():
         try:
             am = litellm.available_models
             models = list(am) if isinstance(am, (list, tuple)) else am
-            return {"available": True, "models": list(models)}
+            models = _sanitize_models(list(models))
+            return {"available": True, "models": models}
         except Exception:
             pass
 
@@ -413,6 +441,7 @@ async def list_litellm_models():
                 models = list(out) if out is not None else []
             except Exception:
                 models = []
+            models = _sanitize_models(models)
             return {"available": True, "models": models}
     except Exception:
         pass
@@ -440,7 +469,57 @@ async def list_litellm_models():
             except Exception:
                 continue
 
-    return {"available": True, "models": [], "note": "litellm installed but no model list exposed"}
+    # No models discovered by any probe -- return unavailable so UI can show helpful message
+    return {"available": False, "models": [], "note": "litellm installed but no model list exposed / wrapper unreachable"}
+
+
+@router.get('/litellm/probe')
+async def litellm_probe():
+    """Diagnostic: probe candidate litellm wrapper URLs and return raw responses.
+
+    Useful when the UI shows unexpected payloads like "unsafe expression"; returns
+    the status, raw text (truncated), and whether JSON parsing succeeded.
+    """
+    import httpx
+    litellm_url = os.getenv('LITELLM_URL', None)
+    candidates = []
+    if litellm_url:
+        candidates.append(litellm_url.rstrip('/'))
+    candidates.extend([
+        'http://localhost:11435',
+        'http://127.0.0.1:11435',
+        'http://host.docker.internal:11435',
+    ])
+    probe_paths = ['/models', '/api/models', '/ollama/models', '/health']
+    results = []
+    timeout = float(os.getenv('LITELLM_PROBE_TIMEOUT', '5.0'))
+    for base in candidates:
+        for p in probe_paths:
+            url = base + p
+            entry = {"url": url, "base": base, "path": p, "ok": False}
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.get(url)
+                    entry['status_code'] = resp.status_code
+                    text = await resp.aread()
+                    try:
+                        # decode safe; truncate to avoid huge payloads
+                        txt = text.decode(errors='ignore')[:4000]
+                    except Exception:
+                        txt = str(text)[:4000]
+                    entry['text_snippet'] = txt
+                    # try JSON parsing
+                    try:
+                        j = resp.json()
+                        entry['json_parsed'] = True
+                        entry['json_preview'] = j if isinstance(j, (list, dict)) else str(j)
+                    except Exception:
+                        entry['json_parsed'] = False
+                    entry['ok'] = resp.status_code == 200
+            except Exception as e:
+                entry['error'] = str(e)
+            results.append(entry)
+    return {"probes": results}
 
 
 

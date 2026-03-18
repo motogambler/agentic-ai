@@ -359,8 +359,26 @@ class AgentExecutor:
     async def worker_loop(self, queue):
         while True:
             try:
-                task = await queue.get()
+                # try to get queue size for diagnostics (best-effort)
+                qsize = None
+                try:
+                    qsize = await queue.qsize()
+                except Exception:
+                    qsize = None
+                logger.info("Worker waiting for task (queue_size=%s)", qsize)
+                try:
+                    # avoid indefinite blocking so shutdowns and Redis stalls are observable
+                    task = await asyncio.wait_for(queue.get(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    # no task available within timeout; loop to check again
+                    continue
+
+                logger.info("Worker got task for agent %s", getattr(task, 'agent_id', None))
                 await self.run_task(task)
+            except asyncio.CancelledError:
+                # expected during shutdown
+                logger.info("Worker loop cancelled; exiting")
+                break
             except Exception:
                 logger.exception("Error running agent task")
             finally:
