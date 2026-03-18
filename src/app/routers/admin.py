@@ -238,28 +238,28 @@ async def import_agents(db: AsyncSession = Depends(get_db)):
             if not name.endswith('.md'):
                 continue
             path = os.path.join(root, name)
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                txt = f.read()
-            fm = _parse_frontmatter(txt) or {}
-            # prefer explicit frontmatter `name`; otherwise use the file's
-            # path relative to the agents base so names are unique across
-            # subfolders (e.g. "engineer_team/engineer-frontend").
-            rel = os.path.relpath(path, base)
-            rel_no_ext = os.path.splitext(rel)[0]
-            agent_name = fm.get('name') or rel_no_ext.replace(os.sep, '/')
-            if agent_name in existing_names:
-                skipped.append(agent_name)
-                continue
-            payload = schemas.AgentCreate(name=agent_name, config=fm)
             try:
-                obj = await crud.create_agent(db, payload)
-                created.append(agent_name)
-                existing_names.add(agent_name)
+                with open(path, 'r', encoding='utf-8') as f:
+                    txt = f.read()
+                fm = _parse_frontmatter(txt) or {}
+                # prefer explicit frontmatter `name`; otherwise use the file's
+                # path relative to the agents base so names are unique across
+                # subfolders (e.g. "engineer_team/engineer-frontend").
+                rel = os.path.relpath(path, base)
+                rel_no_ext = os.path.splitext(rel)[0]
+                agent_name = fm.get('name') or rel_no_ext.replace(os.sep, '/')
+                if agent_name in existing_names:
+                    skipped.append(agent_name)
+                    continue
+                payload = schemas.AgentCreate(name=agent_name, config=fm)
+                try:
+                    obj = await crud.create_agent(db, payload)
+                    created.append(agent_name)
+                    existing_names.add(agent_name)
+                except Exception as e:
+                    errors.append({"file": name, "error": str(e)})
             except Exception as e:
                 errors.append({"file": name, "error": str(e)})
-        except Exception as e:
-            errors.append({"file": name, "error": str(e)})
 
     return {"created": created, "skipped": skipped, "errors": errors}
 

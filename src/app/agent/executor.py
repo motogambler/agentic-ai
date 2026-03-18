@@ -184,6 +184,10 @@ class AgentExecutor:
             "If no tool is needed, respond with a concise plain-text answer only."
         )
 
+        # Keep a stable base prompt so follow-up generations don't depend on
+        # a variable that might be shadowed or unassigned in some runtime paths.
+        base_prompt = prompt
+
         # If a tool_call was provided in the task context, run it directly and persist
         if task.context and isinstance(task.context, dict) and task.context.get("tool_call"):
             from ..tools import run_tool
@@ -317,11 +321,19 @@ class AgentExecutor:
                 await add_memory(db, task.agent_id, tmem)
 
             # Optionally call LLM again with the tool result to produce a final summary
-            followup_prompt = (
-                f"Agent {task.agent_id} goal: {task.goal}\n"
-                f"Tool {tool} returned: {tool_result}\n"
-                "Respond with a final concise plain-text summary only. Do not return JSON."
-            )
+            try:
+                followup_prompt = (
+                    f"{base_prompt}\n"
+                    f"Tool {tool} returned: {tool_result}\n"
+                    "Respond with a final concise plain-text summary only. Do not return JSON."
+                )
+            except Exception:
+                # fallback to a minimal prompt if something unexpected happens
+                followup_prompt = (
+                    f"Agent {task.agent_id} goal: {task.goal}\n"
+                    f"Tool {tool} returned: {tool_result}\n"
+                    "Respond with a final concise plain-text summary only. Do not return JSON."
+                )
             # Reuse the same adapter preference order so prefixed models like
             # `ollama:<name>` continue to route through the LiteLLM wrapper.
             fresp = await _call_adapter_with_retries(self.litellm, followup_prompt, model=preferred_model, timeout=primary_timeout, retries=2)

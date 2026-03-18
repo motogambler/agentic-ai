@@ -66,30 +66,39 @@ class QueueAdapter:
         await self._local_q.put(item)
 
     async def get(self):
-        # prefer Redis when available, otherwise use the adapter-local queue
-        redis = await _get_redis()
-        if redis is not None:
-            try:
-                res = await redis.blpop(_queue_name, timeout=1)
-                if res:
-                    payload = res[1]
-                    try:
-                        obj = json.loads(payload)
-                    except Exception:
-                        return payload
-                    if isinstance(obj, dict):
+        # prefer Redis when available; if Redis is present but empty, retry
+        # BLPOP instead of falling back to the in-memory queue (which would
+        # otherwise block indefinitely if it's empty).
+        while True:
+            redis = await _get_redis()
+            if redis is not None:
+                try:
+                    # wait up to a few seconds for an item; if none, loop and retry
+                    res = await redis.blpop(_queue_name, timeout=5)
+                    if res:
+                        payload = res[1]
                         try:
-                            from .executor import AgentTask
-
-                            return AgentTask(**obj)
+                            obj = json.loads(payload)
                         except Exception:
-                            return obj
-                    return obj
-            except Exception:
-                pass
-        if self._local_q is None:
-            self._local_q = asyncio.Queue()
-        return await self._local_q.get()
+                            return payload
+                        if isinstance(obj, dict):
+                            try:
+                                from .executor import AgentTask
+
+                                return AgentTask(**obj)
+                            except Exception:
+                                return obj
+                        return obj
+                    # no result within timeout, retry BLPOP
+                    continue
+                except Exception:
+                    # Redis appears to have failed; fall through to local queue fallback
+                    pass
+
+            # Redis not available or failed: use local in-memory queue as a fallback
+            if self._local_q is None:
+                self._local_q = asyncio.Queue()
+            return await self._local_q.get()
 
     async def qsize(self):
         # If Redis is available, return list length; otherwise use in-memory queue size

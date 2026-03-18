@@ -28,6 +28,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - OLLAMA_URL=http://host.docker.internal:11434
+      # Provide a Hugging Face token to allow authenticated snapshot_downloads
+      # Set HF_TOKEN in your environment or in a .env file before `docker compose up`.
+      - HF_TOKEN=${HF_TOKEN:-}
 
 volumes:
   pgdata:

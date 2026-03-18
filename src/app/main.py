@@ -49,6 +49,14 @@ async def on_startup():
         loop = asyncio.get_event_loop()
         loop.create_task(executor.worker_loop(queue))
         logging.getLogger("agent.executor").info("Agent worker started")
+        # Start memory pruning/summarization background job
+        try:
+            from .memory_manager import prune_loop
+
+            app.state.memory_pruner = loop.create_task(prune_loop(AsyncSessionLocal))
+            logging.getLogger('uvicorn').info('Memory pruner started')
+        except Exception:
+            logging.getLogger('uvicorn').exception('Failed to start memory pruner')
         # Start background metrics persister
         async def _metrics_persister():
             while True:
